@@ -23,6 +23,8 @@ if USE_CYTHON and not HAVE_CYTHON:
 
 # Add include dirs specified by environment variables
 include_dirs = []
+if 'SAGE_ROOT' in os.environ:
+    include_dirs.append(os.path.join(os.environ['SAGE_ROOT'], 'src', 'build', 'cythonized'))
 if 'GMP_INCLUDE_DIR' in os.environ:
     include_dirs.append(os.environ['GMP_INCLUDE_DIR'])
 if 'QSOPTEX_INCLUDE_DIR' in os.environ:

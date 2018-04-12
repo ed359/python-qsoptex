@@ -2,6 +2,10 @@
 from libc cimport stdlib, limits
 cimport cqsoptex
 cimport cgmp
+# from sage.libs.gmp.types cimport mpq_t, mpz_t
+cimport sage.libs.gmp.all as sgmp
+cimport sage.rings.integer as sinteger
+cimport sage.rings.rational as srational
 
 import numbers
 import fractions
@@ -104,51 +108,63 @@ cdef const char* _chars(s):
 
 # Conversion from numeric Python types to GMP types
 cdef int mpz_set_pylong(cgmp.mpz_t rop, object value) except -1:
-    """Set mpz_t value from Python int/long object"""
+    """Set mpz_t value from Python int/long object or sage Integer"""
 
     cdef int overflow
     cdef long long_value
     cdef cgmp.mpz_t z_temp
 
-    if not isinstance(value, integer_types):
-        raise ValueError('Value must be a Python int or long')
+    if isinstance(value, sinteger.Integer):
+        cgmp.mpz_set(rop, <cgmp.mpz_t>((<sinteger.Integer>value).value))
+        return 0
+    
+    elif isinstance(value, integer_types):
+        long_value = PyLong_AsLongAndOverflow(value, &overflow)
+        if not overflow:
+            cgmp.mpz_set_si(rop, long_value)
+        else:
+            cgmp.mpz_init(z_temp)
+            cgmp.mpz_set_ui(rop, 0)
+            try:
+                sign = -1 if value < 0 else 1
+                value = abs(value)
+                offset = 0
+                while value > 0:
+                    cgmp.mpz_set_ui(z_temp, value & 0xffff)
+                    cgmp.mpz_mul_2exp(z_temp, z_temp, offset)
+                    cgmp.mpz_add(rop, rop, z_temp)
+                    value >>= 16
+                    offset += 16
 
-    long_value = PyLong_AsLongAndOverflow(value, &overflow)
-    if not overflow:
-        cgmp.mpz_set_si(rop, long_value)
+                cgmp.mpz_mul_si(rop, rop, sign)
+            finally:
+                cgmp.mpz_clear(z_temp)
+
+        return 0
+    
     else:
-        cgmp.mpz_init(z_temp)
-        cgmp.mpz_set_ui(rop, 0)
-        try:
-            sign = -1 if value < 0 else 1
-            value = abs(value)
-            offset = 0
-            while value > 0:
-                cgmp.mpz_set_ui(z_temp, value & 0xffff)
-                cgmp.mpz_mul_2exp(z_temp, z_temp, offset)
-                cgmp.mpz_add(rop, rop, z_temp)
-                value >>= 16
-                offset += 16
-
-            cgmp.mpz_mul_si(rop, rop, sign)
-        finally:
-            cgmp.mpz_clear(z_temp)
-
-    return 0
-
+        raise ValueError('Value must be a sage Integer, Python int, or Python long')
 
 cdef int mpq_set_pyrational(cgmp.mpq_t rop, object value) except -1:
-    """Set mpq_t value from Python Rational object"""
+    """Set mpq_t value from Python numbers.Rational, sage Integer, or sage Rational object"""
 
-    if not isinstance(value, numbers.Rational):
-        raise ValueError('Value must be a Python numbers.Rational')
+    if isinstance(value, sinteger.Integer):
+        mpz_set_pylong(cgmp.mpq_numref(rop), value)
+        mpz_set_pylong(cgmp.mpq_denref(rop), 1L)        
+        return 0
 
-    mpz_set_pylong(cgmp.mpq_numref(rop), value.numerator)
-    mpz_set_pylong(cgmp.mpq_denref(rop), value.denominator)
-    cgmp.mpq_canonicalize(rop)
+    elif isinstance(value, srational.Rational):
+        cgmp.mpq_set(rop, <cgmp.mpq_t>(<srational.Rational>value).value)
+        return 0
 
-    return 0
+    elif isinstance(value, numbers.Rational):
+        mpz_set_pylong(cgmp.mpq_numref(rop), value.numerator)
+        mpz_set_pylong(cgmp.mpq_denref(rop), value.denominator)
+        cgmp.mpq_canonicalize(rop)
+        return 0
 
+    else:
+        raise ValueError('Value must be a Python numbers.Rational or sage Rational')
 
 cdef int mpq_set_pynumeric(cgmp.mpq_t rop, object value) except -1:
     """Set mpq_t value from Python numeric object"""
@@ -158,7 +174,7 @@ cdef int mpq_set_pynumeric(cgmp.mpq_t rop, object value) except -1:
         else:
             cgmp.mpq_set(rop, cqsoptex.mpq_NINFTY)
     else:
-        if not isinstance(value, numbers.Rational):
+        if not isinstance(value, (numbers.Rational, srational.Rational, sinteger.Integer)):
             # Try to convert to fractional value
             value = fractions.Fraction(value)
         mpq_set_pyrational(rop, value)
@@ -178,6 +194,13 @@ cdef object pylong_from_mpz(const cgmp.mpz_t value):
 
     return cgmp.mpz_sgn(value) * result
 
+cdef sinteger.Integer sinteger_from_mpz(const cgmp.mpz_t value):
+    """Return sage Integer representing the value"""
+    
+    cdef sinteger.Integer result = sinteger.Integer()
+    result.set_from_mpz(<sgmp.mpz_t>value)
+
+    return result
 
 cdef object pyrational_from_mpq(const cgmp.mpq_t value):
     """Return Python Rational (long or Fraction) representing the value"""
@@ -188,6 +211,13 @@ cdef object pyrational_from_mpq(const cgmp.mpq_t value):
         return num
     return fractions.Fraction(num, denom)
 
+cdef srational.Rational srational_from_mpq(const cgmp.mpq_t value):
+    """Return sage Rational representing the value"""
+    
+    cdef srational.Rational result = srational.Rational()
+    result.set_from_mpq(<sgmp.mpq_t>value)
+
+    return result
 
 def print_version():
     cqsoptex.QSopt_ex_version()
@@ -397,7 +427,7 @@ cdef class ExactProblem:
             # Copy variable values from Python numbers
             for i, pair in enumerate(values):
                 variable, value = pair
-
+                
                 # Get variable index and value
                 indices[i] = self._col_index_maybe_string(variable)
                 mpq_set_pynumeric(values_q[i], value)
@@ -529,13 +559,15 @@ cdef class ExactProblem:
         cdef int index = self._col_index_maybe_string(variable)
         if index < 0 or index >= self._c_sol_nvars:
             raise IndexError('Invalid variable index')
-        return pyrational_from_mpq(self._c_sol_x[index])
+        # return pyrational_from_mpq(self._c_sol_x[index])
+        return srational_from_mpq(self._c_sol_x[index])
 
     def get_values(self):
         """Get the variable values as a list"""
         values = []
         for i in range(self._c_sol_nvars):
-            values.append(pyrational_from_mpq(self._c_sol_x[i]))
+            # values.append(pyrational_from_mpq(self._c_sol_x[i]))
+            values.append(srational_from_mpq(self._c_sol_x[i]))
         return values
 
     def get_objective_value(self):
@@ -549,7 +581,8 @@ cdef class ExactProblem:
             r = cqsoptex.mpq_QSget_objval(self._c_qsdata, &value)
             if r != 0:
                 raise ExactProblemError('An error occured in QSget_objval()')
-            result = pyrational_from_mpq(value)
+            # result = pyrational_from_mpq(value)
+            result = srational_from_mpq(value)
         finally:
             cgmp.mpq_clear(value)
 
