@@ -6,6 +6,7 @@ cimport cgmp
 cimport sage.libs.gmp.all as sgmp
 cimport sage.rings.integer as sinteger
 cimport sage.rings.rational as srational
+cimport sage.rings.real_mpfr as sreal
 
 import numbers
 import fractions
@@ -107,8 +108,8 @@ cdef const char* _chars(s):
 
 
 # Conversion from numeric Python types to GMP types
-cdef int mpz_set_pylong(cgmp.mpz_t rop, object value) except -1:
-    """Set mpz_t value from Python int/long object or sage Integer"""
+cdef int mpz_set_pyintegral(cgmp.mpz_t rop, object value) except -1:
+    """Set mpz_t value from sage Integer or Python numbers.Integral"""
 
     cdef int overflow
     cdef long long_value
@@ -118,7 +119,11 @@ cdef int mpz_set_pylong(cgmp.mpz_t rop, object value) except -1:
         cgmp.mpz_set(rop, <cgmp.mpz_t>((<sinteger.Integer>value).value))
         return 0
     
-    elif isinstance(value, integer_types):
+    elif isinstance(value, numbers.Integral):
+        if not isinstance(value, integer_types):
+            value = int(value)
+
+        # TODO: investigate using sgmp.mpz_set_pylong
         long_value = PyLong_AsLongAndOverflow(value, &overflow)
         if not overflow:
             cgmp.mpz_set_si(rop, long_value)
@@ -143,42 +148,63 @@ cdef int mpz_set_pylong(cgmp.mpz_t rop, object value) except -1:
         return 0
     
     else:
-        raise ValueError('Value must be a sage Integer, Python int, or Python long')
+        raise ValueError('Value must be a sage Integer, or Python numbers.Integral')
 
-cdef int mpq_set_pyrational(cgmp.mpq_t rop, object value) except -1:
-    """Set mpq_t value from Python numbers.Rational, sage Integer, or sage Rational object"""
+
+cdef int mpq_set_pyintegral(cgmp.mpq_t rop, object value) except -1:
+    """Set mpq_t value from sage Integer or Python numbers.Integral object"""
 
     if isinstance(value, sinteger.Integer):
-        mpz_set_pylong(cgmp.mpq_numref(rop), value)
-        mpz_set_pylong(cgmp.mpq_denref(rop), 1L)        
+        mpz_set_pyintegral(cgmp.mpq_numref(rop), value)
+        mpz_set_pyintegral(cgmp.mpq_denref(rop), 1L)        
         return 0
 
-    elif isinstance(value, srational.Rational):
+    elif isinstance(value, numbers.Integral):
+        mpz_set_pyintegral(cgmp.mpq_numref(rop), value)
+        mpz_set_pyintegral(cgmp.mpq_denref(rop), 1L)
+        return 0
+
+    else:
+        raise ValueError('Value must be a sage Integer or Python numbers.Integral')
+
+
+cdef int mpq_set_pyrational(cgmp.mpq_t rop, object value) except -1:
+    """Set mpq_t value from sage Rational or Python numbers.Rational object"""
+
+    if isinstance(value, srational.Rational):
         cgmp.mpq_set(rop, <cgmp.mpq_t>(<srational.Rational>value).value)
         return 0
 
     elif isinstance(value, numbers.Rational):
-        mpz_set_pylong(cgmp.mpq_numref(rop), value.numerator)
-        mpz_set_pylong(cgmp.mpq_denref(rop), value.denominator)
+        mpz_set_pyintegral(cgmp.mpq_numref(rop), value.numerator)
+        mpz_set_pyintegral(cgmp.mpq_denref(rop), value.denominator)
         cgmp.mpq_canonicalize(rop)
         return 0
 
     else:
-        raise ValueError('Value must be a Python numbers.Rational or sage Rational')
+        raise ValueError('Value must be a sage Rational or Python numbers.Rational')
 
 cdef int mpq_set_pynumeric(cgmp.mpq_t rop, object value) except -1:
-    """Set mpq_t value from Python numeric object"""
+    """Set mpq_t value from sage or Python numeric object"""
+
     if math.isinf(value):
         if value > 0:
             cgmp.mpq_set(rop, cqsoptex.mpq_INFTY)
         else:
             cgmp.mpq_set(rop, cqsoptex.mpq_NINFTY)
     else:
-        if not isinstance(value, (numbers.Rational, srational.Rational, sinteger.Integer)):
-            # Try to convert to fractional value
+        if isinstance(value, (numbers.Integral, sinteger.Integer)):
+            mpq_set_pyintegral(rop, value)
+        elif isinstance(value, (numbers.Rational, srational.Rational)):
+            mpq_set_pyrational(rop, value)
+        elif isinstance(value, sreal.RealNumber):
+            raise ValueError('please convert sage RealNumber types to Rational manually')
+        #TODO: try converting sage RingElements or FieldElements ro Rational
+        else:
+            # Try to convert to python fractional value
+            print("Trying to convert {} to fractions.Fraction".format(type(value)))
             value = fractions.Fraction(value)
-        mpq_set_pyrational(rop, value)
-
+            mpq_set_pyrational(rop, value)
     return 0
 
 
